@@ -110,7 +110,7 @@ def clean_values(values_list: list) -> list:
     """
     remove "__unallocated__" from values'
     """
-    return values_list[1:] if values_list[0].startswith("__") else values_list
+    return values_list[1:] if (values_list and values_list[0].startswith("__")) else values_list
 
 
 def clean_df(df: DataFrame, col: str) -> DataFrame:
