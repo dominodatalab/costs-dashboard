@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import requests
@@ -19,6 +20,9 @@ from pandas import (
     DataFrame,
     Timestamp
 )
+
+logger = logging.getLogger(__name__)
+
 
 api_proxy = os.environ["DOMINO_API_PROXY"]
 
@@ -98,13 +102,27 @@ def get_execution_cost_table(aggregated_allocations: List) -> DataFrame:
 
     for costData in aggregated_allocations:
 
-        workload_type, project_id, project_name, username, organization, billing_tag = costData["name"].split("/")
+        try:
+            (
+                workload_type,
+                project_id,
+                project_name,
+                username,
+                organization,
+                billing_tag,
+            ) = costData[
+                "name"
+            ].split("/")
+        except Exception as e:
+            logger.warning("failed to parse record: %s", costData["name"])
+            logger.warning(e)
+            continue
         
-        cpu_cost = costData["cpuCost"] + costData["cpuCostAdjustment"]
-        gpu_cost = costData["gpuCost"] + costData["gpuCostAdjustment"]
+        cpu_cost = costData["cpuCost"] + costData.get("cpuCostAdjustment", 0)
+        gpu_cost = costData["gpuCost"] + costData.get("gpuCostAdjustment", 0)
         compute_cost = cpu_cost + gpu_cost
         
-        ram_cost = costData["ramCost"] + costData["ramCostAdjustment"]
+        ram_cost = costData["ramCost"] + costData.get("ramCostAdjustment", 0)
         
         total_cost = costData["totalCost"]
 
@@ -136,23 +154,39 @@ def get_execution_cost_table(aggregated_allocations: List) -> DataFrame:
     return execution_costs
 
 def buildHistogram(cost_table: DataFrame, bin_by: str):
-    top = clean_df(cost_table, bin_by).groupby(bin_by)['TOTAL COST'].sum().nlargest(10).index
-    costs = cost_table[cost_table[bin_by].isin(top)]
-    data_index = costs.groupby(bin_by)['TOTAL COST'].sum().sort_values(ascending=False).index
+    top = clean_df(cost_table, bin_by).groupby(bin_by)['TOTAL COST'].sum().nlargest(10)
+    top_df = top.reset_index()
+    top_df.columns = [bin_by, 'TOTAL COST']
+    topIndex = top.index
+
+    # Truncate labels beforehand
+    truncated_labels = [
+        f"{label[:15]}..." if len(label) > 15 else label for label in topIndex
+    ]
+
     title = "Top " + bin_by.title() + " by Total Cost"
-    chart = px.histogram(costs, x='TOTAL COST', y=bin_by, orientation='h',
-                              title=title, labels={bin_by: bin_by.title(), 'TOTAL COST': 'Total Cost'},
-                              hover_data={'TOTAL COST': '$:.2f'},
-                              category_orders={bin_by: data_index})
+    chart = px.histogram(
+        top_df,
+        x='TOTAL COST',
+        y=bin_by,
+        orientation="h",
+        title=title,
+        labels={
+            bin_by: bin_by.title(),
+            'TOTAL COST': "Total Cost",
+        },
+        hover_data={'TOTAL COST': "$:.2f"},
+        category_orders={bin_by: topIndex}
+    )
     chart.update_layout(
         title_text=title,
         title_x=0.5,
-        xaxis_tickprefix = '$',
-        xaxis_tickformat = ',.',
+        xaxis_tickprefix="$",
+        xaxis_tickformat=",.",
         yaxis={  # Trim labels that are larger than 15 chars
-            'tickmode': 'array',
-            'tickvals': data_index,
-            'ticktext': [f"{txt[:15]}..." if len(txt) > 15 else txt for txt in chart['layout']['yaxis']['categoryarray']]
+            "tickmode": "array",
+            "tickvals": topIndex,
+            "ticktext": truncated_labels,  # Use pre-computed truncated labels,
         },
         dragmode=False
     )
@@ -326,7 +360,7 @@ def clean_values(values_list: list) -> list:
     """
     remove "__unallocated__" from values'
     """
-    return values_list[1:] if values_list[0].startswith("__") else values_list
+    return values_list[1:] if (values_list and values_list[0].startswith("__")) else values_list
 
 def clean_df(df: DataFrame, col: str) -> DataFrame:
     """
@@ -441,7 +475,21 @@ def workload_cost_details(cost_table: DataFrame):
 def update(time_span, billing_tag, project, user):
     allocations = get_aggregated_allocations(time_span)
     if not allocations:
-        return [], [], [], 'No data', 'No data', 'No data', {}, None, None, None, None, None
+        logger.info("No allocations found for the given time span")
+        return (
+            [],
+            [],
+            [],
+            "No data",
+            "No data",
+            "No data",
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+        )
 
     cost_table = get_execution_cost_table(allocations)
 
